@@ -11,9 +11,8 @@ import {
   UserForbiddenError,
 } from "./errors";
 import { getBearerToken, validateJWT } from "../auth";
-import { getVideo, updateVideo } from "../db/videos";
-import type { Path } from "typescript";
-import { uploadVideoToS3 } from "./s3";
+import { getVideo, updateVideo, type Video } from "../db/videos";
+import { generatePresignedURL, uploadVideoToS3 } from "./s3";
 import { rm } from "node:fs/promises";
 
 const MAX_UPLOAD_VIDEO_SIZE = 1 << 30;
@@ -59,8 +58,7 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const s3Key = `${aspectRatio}/${fileNameWithExtension}`;
   uploadVideoToS3(cfg, s3Key, tempProcessFilePath, "video/mp4");
 
-  const videoURL = `http://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${s3Key}`;
-  video.videoURL = videoURL;
+  video.videoURL = s3Key;
   updateVideo(cfg.db, video);
 
   await Promise.all([
@@ -68,7 +66,8 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     rm(tempProcessFilePath, { force: true }),
   ]);
 
-  return respondWithJSON(200, videoFile);
+  const videoWithSignedURL = await dbVideoToSignedVideo(cfg, video);
+  return respondWithJSON(200, videoWithSignedURL);
 }
 
 async function getVideoAspectRatio(filePath: string) {
@@ -144,4 +143,15 @@ async function processVideoForFastStart(inputFilePath: string) {
   }
 
   return outputFilePath;
+}
+
+export async function dbVideoToSignedVideo(cfg: ApiConfig, video: Video) {
+  const key = video.videoURL;
+  if (!key) {
+    return video;
+  }
+
+  const presignedURL = await generatePresignedURL(cfg, key, 5 * 60);
+
+  return { ...video, videoURL: presignedURL };
 }
